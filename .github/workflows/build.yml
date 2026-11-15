@@ -29,4 +29,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-editor-apk
-          path: build/apk
+          path: build/
+          if-no-files-found: error
