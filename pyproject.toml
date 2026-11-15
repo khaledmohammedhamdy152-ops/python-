@@ -1,0 +1,15 @@
+[project]
+name = "pyeditor"
+version = "0.1.0"
+description = "Python code editor with Arabic support"
+requires-python = ">=3.10"
+dependencies = ["flet==0.28.3"]
+
+[tool.flet]
+org = "com.khaled"
+product = "Python Editor"
+company = "Khaled"
+copyright = "Khaled"
+
+[tool.flet.app]
+path = "src"
