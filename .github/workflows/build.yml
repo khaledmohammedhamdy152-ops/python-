@@ -23,12 +23,14 @@ jobs:
       - name: Install Flet
         run: pip install "flet>=1.0.0,<1.1"
 
-      - name: Install NDK (with retry)
+      - name: Install NDK and CMake (with retry)
         run: |
-          for i in 1 2 3; do
-            rm -rf "$ANDROID_HOME/ndk/28.2.13676358"
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" && break
-            echo "retry $i"; sleep 5
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          for pkg in "ndk;28.2.13676358" "cmake;3.22.1"; do
+            for i in 1 2 3; do
+              yes | "$SDKM" "$pkg" && break
+              echo "retry $i for $pkg"; sleep 5
+            done
           done
 
       - name: Build APK
