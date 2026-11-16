@@ -77,6 +77,34 @@ def tokenize(text):
     return merged
 
 
+def line_tokens(text, prev_state=0):
+    """تلوين سطر واحد مع دعم النصوص الثلاثية متعددة الاسطر.
+
+    prev_state: 0 عادي، 1 داخل \"\"\" ، 2 داخل '''.
+    يعيد (قائمة (النوع, البداية, النهاية) لغير العادي, الحالة_الجديدة)."""
+    spans = []
+    start = 0
+    if prev_state in (1, 2):
+        delim = '"""' if prev_state == 1 else "'''"
+        j = text.find(delim)
+        if j == -1:
+            return ([("string", 0, len(text))] if text else []), prev_state
+        start = j + 3
+        spans.append(("string", 0, start))
+    seg = text[start:]
+    state = 0
+    for kind, s, e in tokenize(seg):
+        if kind == "plain":
+            continue
+        spans.append((kind, start + s, start + e))
+        if kind == "string":
+            body = seg[s:e].lstrip("rRbBuUfF")
+            for q, st in (('"""', 1), ("'''", 2)):
+                if body.startswith(q) and (len(body) < 6 or not body.endswith(q)):
+                    state = st
+    return spans, state
+
+
 def _soft_context(text, end):
     # match/case/_/type تُلوَّن فقط لو جاء بعدها شيء يدل على استخدامها ككلمة محجوزة
     nxt = text[end:end + 1]
