@@ -174,8 +174,9 @@ async def main(page: ft.Page):
 
     # --------------------------------------------------------- المحرر
     def gutter_width():
-        digits = max(2, len(str(max(1, (cur()["code"] or "").count("\n") + 1))))
-        return float(14 + digits * (max(10.0, S["fs"] - 3) * 0.62 + 2))
+        # عرض سخي: 3 ارقام على الاقل، وكل رقم بعرض الخط الاساسي (وليس الاصغر)
+        digits = max(3, len(str(max(1, (cur()["code"] or "").count("\n") + 1))))
+        return float(28 + digits * S["fs"] * 0.8)
 
     def base_words():
         import keyword
@@ -189,10 +190,15 @@ async def main(page: ft.Page):
         return sorted(set(base_words()) | set(mine))
 
     def gutter():
-        return fce.GutterStyle(
-            text_style=ft.TextStyle(font_family=MONO, size=max(10.0, S["fs"] - 3),
-                                    color=C["gutter"]),
-            show_line_numbers=True, show_folding_handles=False, width=gutter_width())
+        ts = ft.TextStyle(font_family=MONO, size=max(10.0, S["fs"] - 3), color=C["gutter"])
+        try:
+            return fce.GutterStyle(text_style=ts, show_line_numbers=True,
+                                   show_folding_handles=False, show_errors=False,
+                                   width=gutter_width(), margin=4,
+                                   background_color=C["sym"])
+        except TypeError:
+            return fce.GutterStyle(text_style=ts, show_line_numbers=True,
+                                   show_folding_handles=False, width=gutter_width())
 
     def make_editor():
         kw = dict(
