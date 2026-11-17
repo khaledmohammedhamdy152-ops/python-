@@ -694,3 +694,185 @@ def explain_code(code):
     items = sorted(((k, v[0], v[1]) for k, v in found.items()),
                    key=lambda x: (x[2][0] if x[2] else 9999, x[0]))
     return {"items": items, "error": err, "lines": len(code.split("\n"))}
+
+
+# ---------------------------------------------------------------- شرح سطر بسطر
+def explain_lines(code):
+    """يشرح الكود سطرا سطرا بالعربية. يعيد قائمة (رقم_السطر, نص_السطر, الشرح)."""
+    out = []
+    in_str = False
+    for no, raw in enumerate(code.split("\n"), 1):
+        s = raw.strip()
+        if raw.count('"""') % 2 == 1 or raw.count("'''") % 2 == 1:
+            was = in_str
+            in_str = not in_str
+            if was or True:
+                out.append((no, s, "نص متعدد الاسطر (توثيق او نص طويل)."))
+                continue
+        if in_str or not s:
+            continue
+        out.append((no, s, _explain_one(s)))
+    return out
+
+
+def _extras(s):
+    notes = []
+    seen = set()
+    for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", s):
+        n = m.group(1)
+        if n in BUILTIN_EXPLAIN and n not in seen and n not in ("print", "input"):
+            seen.add(n)
+            notes.append(f"{n}(): {BUILTIN_EXPLAIN[n]}")
+    for m in re.finditer(r"\.([A-Za-z_]\w*)\s*\(", s):
+        n = m.group(1)
+        if n in METHOD_EXPLAIN and n not in seen:
+            seen.add(n)
+            notes.append(f".{n}(): {METHOD_EXPLAIN[n]}")
+    return notes[:3]
+
+
+def _explain_one(s):
+    ex = ""
+    if s.startswith("#"):
+        return "تعليق: يتجاهله بايثون، للتوضيح فقط."
+    m = re.match(r"(?:from\s+(\S+)\s+)?import\s+(.+)", s)
+    if m:
+        mod = (m.group(1) or m.group(2).split(",")[0].split()[0]).split(".")[0]
+        ex = f"يستدعي مكتبة جاهزة ({mod}) لاستخدام ادواتها."
+        if mod in MODULES:
+            ex += " " + MODULES[mod]
+        return ex
+    m = re.match(r"(async\s+)?def\s+(\w+)\s*\((.*?)\)\s*(->.*)?:", s)
+    if m:
+        args = m.group(3).strip()
+        return (f"يعرّف دالة جديدة اسمها {m.group(2)}" +
+                (f" تستقبل: {args}." if args else " بدون معاملات.") +
+                " الكود المزاح تحتها هو جسم الدالة ولا يعمل الا عند استدعائها.")
+    m = re.match(r"class\s+(\w+)", s)
+    if m:
+        return f"يعرّف كلاس (قالب لكائنات) اسمه {m.group(1)}."
+    m = re.match(r"elif\s+(.+):", s)
+    if m:
+        return f"شرط بديل: اذا لم يتحقق الشرط السابق وتحقق ({m.group(1)}) ينفذ ما تحته."
+    m = re.match(r"if\s+(.+):", s)
+    if m:
+        return f"شرط: اذا تحقق ({m.group(1)}) ينفذ الكود المزاح تحته."
+    if re.match(r"else\s*:", s):
+        return "والا: ينفذ ما تحته عندما لا يتحقق الشرط السابق."
+    m = re.match(r"for\s+(.+?)\s+in\s+(.+):", s)
+    if m:
+        r = re.match(r"range\((.*)\)", m.group(2).strip())
+        extra = f" (range(...) يولّد اعدادا: {r.group(1)})" if r else ""
+        return (f"حلقة تكرار: تمر على كل عنصر من ({m.group(2)}) وتخزنه في {m.group(1)}"
+                f" وتنفذ ما تحتها لكل مرة.{extra}")
+    m = re.match(r"while\s+(.+):", s)
+    if m:
+        return f"حلقة تكرار: تكرر ما تحتها ما دام ({m.group(1)}) صحيحا."
+    if re.match(r"try\s*:", s):
+        return "محاولة: يجرّب تنفيذ ما تحته، واذا حدث خطأ ينتقل الى except."
+    m = re.match(r"except\s*(.*):", s)
+    if m:
+        return ("يلتقط الخطأ" + (f" من نوع {m.group(1)}" if m.group(1) else "") +
+                " بدل ان يتوقف البرنامج، وينفذ ما تحته.")
+    if re.match(r"finally\s*:", s):
+        return "ينفذ ما تحته دائما سواء حدث خطأ او لا."
+    m = re.match(r"with\s+(.+?)(?:\s+as\s+(\w+))?:", s)
+    if m:
+        return "يفتح مورد (مثل ملف) ويغلقه تلقائيا عند الانتهاء" + (
+            f"، ويسميه {m.group(2)}." if m.group(2) else ".")
+    m = re.match(r"return\b\s*(.*)", s)
+    if m:
+        return "يخرج من الدالة ويعيد " + (f"القيمة ({m.group(1)})." if m.group(1) else "لا شيء.")
+    if s in ("break", "continue", "pass"):
+        return {"break": "يوقف الحلقة فورا.",
+                "continue": "يتخطى باقي هذه الدورة وينتقل للدورة التالية.",
+                "pass": "لا يفعل شيئا (مكان فارغ مؤقت)."}[s]
+    m = re.match(r"raise\s+(\w+)", s)
+    if m:
+        return f"يرمي خطأ من نوع {m.group(1)} عمدا."
+    m = re.match(r"global\s+(.+)", s)
+    if m:
+        return f"يسمح للدالة بتعديل المتغير العام {m.group(1)}."
+    m = re.match(r"print\s*\((.*)\)\s*$", s)
+    if m:
+        a = m.group(1).strip()
+        base = "يطبع على الشاشة"
+        if not a:
+            return base + " سطرا فارغا."
+        if re.match(r"^[fF]['\"]", a):
+            base += " نصا فيه قيم متغيرات بين {} (f-string)"
+        elif re.match(r"^['\"].*['\"]$", a):
+            base += f" النص {a}"
+        else:
+            base += f" قيمة ({a})"
+        return base + "."
+    m = re.match(r"([\w.\[\]'\", ]+?)\s*=\s*(?:int|float|str)?\(?\s*input\s*\((.*?)\)", s)
+    if m:
+        conv = ""
+        if re.search(r"=\s*int\(", s):
+            conv = " ويحوّله لرقم صحيح"
+        elif re.search(r"=\s*float\(", s):
+            conv = " ويحوّله لرقم عشري"
+        return f"يطلب من المستخدم ادخال قيمة{conv} ويخزنها في {m.group(1)}. الرسالة الظاهرة: {m.group(2)}"
+    m = re.match(r"(\w+)\s*([+\-*/%]|//|\*\*)=\s*(.+)", s)
+    if m:
+        ops = {"+": "يزيد", "-": "ينقص", "*": "يضرب", "/": "يقسم", "%": "باقي القسمة على",
+               "//": "يقسم قسمة صحيحة على", "**": "يرفع للقوة"}
+        return f"{ops[m.group(2)]} المتغير {m.group(1)} بالقيمة {m.group(3)} ويحفظ الناتج فيه."
+    m = re.match(r"([A-Za-z_][\w.\[\]'\"]*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=\s*(.+)", s)
+    if m and not s.startswith("=="):
+        rhs = m.group(2).strip()
+        kind = ""
+        if re.match(r"^\[", rhs):
+            kind = " (قائمة)"
+        elif re.match(r"^\{.*:", rhs):
+            kind = " (قاموس)"
+        elif re.match(r"^\{", rhs):
+            kind = " (مجموعة)"
+        elif re.match(r"^\(", rhs):
+            kind = " (مجموعة ثابتة)"
+        elif re.match(r"^[fF]?['\"]", rhs):
+            kind = " (نص)"
+        elif re.match(r"^-?\d+$", rhs):
+            kind = " (رقم صحيح)"
+        elif re.match(r"^-?\d+\.\d+$", rhs):
+            kind = " (رقم عشري)"
+        elif rhs in ("True", "False"):
+            kind = " (صح/خطأ)"
+        txt = f"يخزن القيمة {rhs}{kind} في المتغير {m.group(1)}."
+        notes = _extras(s)
+        return txt + ("  " + " | ".join(notes) if notes else "")
+    notes = _extras(s)
+    if notes:
+        return "يستدعي: " + " | ".join(notes)
+    return "سطر تنفيذي: يستدعي او يحسب شيئا وفق ما هو مكتوب."
+
+
+def auto_newline(old, new):
+    """بعد Enter: يضبط المسافة البادئة (يحافظ على مسافة السطر السابق، ويزيد 4 بعد النقطتين).
+
+    يتعامل حتى لو المحرر نفسه اضاف مسافات. يعيد (نص, مكان_المؤشر) او None."""
+    d = len(new) - len(old)
+    if d < 1:
+        return None
+    k = 0
+    n = len(old)
+    while k < n and old[k] == new[k]:
+        k += 1
+    ins = new[k:k + d]
+    if new[k + d:] != old[k:] or not ins.startswith("\n") or ins[1:].strip(" \t"):
+        return None
+    line_start = old.rfind("\n", 0, k) + 1
+    prev_line = old[line_start:k]
+    indent = re.match(r"[ \t]*", prev_line).group()
+    if prev_line.rstrip().endswith(":"):
+        indent += "    "
+    # لو الاقواس مفتوحة ومغلقة حول المؤشر ( {} او () ) ننزل السطر الختامي
+    nxt = old[k:k + 1]
+    prv = prev_line.rstrip()[-1:] if prev_line.strip() else ""
+    if prv in "([{" and nxt and nxt in ")]}" and prv:
+        base = re.match(r"[ \t]*", prev_line).group()
+        text = old[:k] + "\n" + indent + "    " + "\n" + base + old[k:]
+        return text, k + 1 + len(indent) + 4
+    text = old[:k] + "\n" + indent + old[k:]
+    return text, k + 1 + len(indent)

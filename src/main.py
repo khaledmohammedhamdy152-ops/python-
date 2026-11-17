@@ -42,9 +42,36 @@ def clamp(v, lo, hi):
 
 
 def pick_theme(dark):
-    names = (("ATOM_ONE_DARK", "MONOKAI_SUBLIME", "MONOKAI", "DRACULA", "VS2015") if dark
-             else ("ATOM_ONE_LIGHT", "GITHUB", "VS", "XCODE"))
-    for n in names:
+    """ثيم مخصص (خلفية سوداء + الوان صريحة لكل شيء). لو فشل نرجع للثيم الجاهز."""
+    import re as _re
+    if dark:
+        col = dict(keyword="#FF7B72", built_in="#79C0FF", title="#D2A8FF", function="#D2A8FF",
+                   string="#A5D6FF", number="#FFA657", literal="#FFA657", comment="#8B949E",
+                   type="#79C0FF", params="#E6E6E6", meta="#FF7B72", symbol="#A5D6FF",
+                   name="#E6E6E6", variable="#E6E6E6", attr="#79C0FF", attribute="#79C0FF",
+                   subst="#E6E6E6", class_name="#FFA657", section="#D2A8FF")
+        fg, bg = "#E6E6E6", "#000000"
+    else:
+        col = dict(keyword="#CF222E", built_in="#0550AE", title="#8250DF", function="#8250DF",
+                   string="#0A3069", number="#953800", literal="#953800", comment="#6E7781",
+                   type="#0550AE", params="#1A1A1A", meta="#CF222E", symbol="#0A3069",
+                   name="#1A1A1A", variable="#1A1A1A", attr="#0550AE", attribute="#0550AE",
+                   subst="#1A1A1A", class_name="#953800", section="#8250DF")
+        fg, bg = "#1A1A1A", "#FFFFFF"
+    kw = {k: ft.TextStyle(color=v) for k, v in col.items()}
+    kw["root"] = ft.TextStyle(color=fg, bgcolor=bg)
+    for _ in range(len(kw) + 1):
+        try:
+            return fce.CustomCodeTheme(**kw)
+        except TypeError as ex:
+            m = _re.search(r"argument '(\w+)'", str(ex))
+            if m and m.group(1) in kw:
+                kw.pop(m.group(1))
+                continue
+            break
+        except Exception:
+            break
+    for n in (("ATOM_ONE_DARK", "MONOKAI", "DRACULA") if dark else ("ATOM_ONE_LIGHT", "GITHUB")):
         t = getattr(fce.CodeTheme, n, None)
         if t is not None:
             return t
@@ -146,6 +173,9 @@ async def main(page: ft.Page):
             pass
 
     # --------------------------------------------------------- المحرر
+    def GB():
+        return {}
+
     def make_editor():
         kw = dict(
             language=fce.CodeLanguage.PYTHON,
@@ -160,7 +190,7 @@ async def main(page: ft.Page):
             kw["gutter_style"] = fce.GutterStyle(
                 text_style=ft.TextStyle(font_family=MONO, size=max(10.0, S["fs"] - 3),
                                         color=C["gutter"]),
-                show_line_numbers=True, show_folding_handles=False, width=46)
+                show_line_numbers=True, show_folding_handles=False, width=46, **GB())
         except Exception:
             pass
         try:
@@ -189,9 +219,11 @@ async def main(page: ft.Page):
         old = S["last"]
         if new == old:
             return
-        if S["ac"]:
+        res = core.auto_newline(old, new)
+        if res is None and S["ac"]:
             res = core.auto_edit(old, new, S["cursor"])
-            if res:
+        if res:
+            if True:
                 new, pos = res
                 W["editor"].value = new
                 set_caret(pos)
@@ -458,18 +490,23 @@ async def main(page: ft.Page):
     writer = Out()
 
     def show_input_row(prompt, ev):
+        box = W.get("input_box")
+        if box is None:
+            ev.set()
+            return
         rtl = bool(AR.search(prompt))
         field = ft.TextField(
-            value="", autofocus=True, expand=True, dense=True,
-            border_color=ft.Colors.TRANSPARENT, color=C["fg"], text_size=S["fs"],
+            value="", autofocus=True, dense=True, text_size=S["fs"],
+            border_color=ft.Colors.TRANSPARENT, color=C["fg"],
             text_style=ft.TextStyle(font_family=MONO, size=S["fs"]),
-            content_padding=ft.Padding.all(0),
+            content_padding=ft.Padding.symmetric(vertical=4, horizontal=0),
             text_align=ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT)
-        label = ft.Text(prompt, color=C["fg"], size=S["fs"], font_family=MONO)
+        label = ft.Text(prompt or "ادخل قيمة:", color=C["hint"], size=S["fs"], font_family=MONO,
+                        text_align=ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT)
 
         def submit(e):
             S["answer"] = field.value or ""
-            W["out"].controls.remove(row)
+            box.visible = False
             shown = prompt + S["answer"]
             S["out"].append((shown, "out"))
             W["out"].controls.append(out_row(shown, "out"))
@@ -477,9 +514,16 @@ async def main(page: ft.Page):
             ev.set()
 
         field.on_submit = submit
-        row = ft.Row([field, label] if rtl else [label, field], spacing=6)
-        W["out"].controls.append(row)
+        send = ft.IconButton(icon=ic("SEND"), icon_color=C["ok"], on_click=submit)
+        box.content = ft.Column([
+            ft.Row([label], alignment=ft.MainAxisAlignment.END if rtl else ft.MainAxisAlignment.START),
+            ft.Row([send, field] if rtl else [field, send], spacing=0)], spacing=0, tight=True)
+        box.visible = True
         page.update()
+        try:
+            page.run_task(field.focus)
+        except Exception:
+            pass
 
     def my_input(prompt=""):
         text = writer.buf + str(prompt)
@@ -516,8 +560,6 @@ async def main(page: ft.Page):
         post_line("السبب: " + info["reason"], "err")
         if info["hint"]:
             post_line("الحل المقترح: " + info["hint"], "hint")
-        if info["detail"]:
-            post_line("التفاصيل: " + info["detail"], "dim")
 
     def set_running(flag):
         btn = W.get("run_btn")
@@ -620,7 +662,10 @@ async def main(page: ft.Page):
                 W["run_btn"],
             ], spacing=0),
             bgcolor=C["bar"], padding=ft.Padding.symmetric(vertical=2, horizontal=6))
-        body = ft.Column([header, ft.Container(content=out, expand=True, bgcolor=C["panel"])],
+        box = ft.Container(visible=False, bgcolor=C["bar"],
+                           padding=ft.Padding.symmetric(vertical=4, horizontal=12))
+        W["input_box"] = box
+        body = ft.Column([header, ft.Container(content=out, expand=True, bgcolor=C["panel"]), box],
                          spacing=0, expand=True)
         show_screen(body)
 
@@ -700,7 +745,7 @@ async def main(page: ft.Page):
         cats = examples_data.categories()
         total = sum(len(v) for v in cats.values())
         search = ft.TextField(hint_text="ابحث عن مثال...", dense=True, text_size=14)
-        lv = ft.ListView(spacing=0, expand=True)
+        lv = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
         def pick(title, code):
             def h(ev):
@@ -749,35 +794,44 @@ async def main(page: ft.Page):
         for w, t in core.METHOD_EXPLAIN.items():
             ctrls.append(ft.ListTile(title=ft.Text("." + w + "()", font_family=MONO),
                                      subtitle=ft.Text(t, size=12), dense=True))
-        dialog("دليل بايثون", ft.ListView(ctrls, spacing=0), height=lv_height(0.72))
+        dialog("دليل بايثون", ft.Column(ctrls, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True), height=lv_height(0.72))
 
     def show_modules(e=None):
         rows = [ft.ListTile(title=ft.Text(m, font_family=MONO), subtitle=ft.Text(t, size=12),
                             dense=True) for m, t in sorted(core.MODULES.items())]
-        dialog("دليل المكتبات (Modules)", ft.ListView(rows, spacing=0), height=lv_height(0.72))
+        dialog("دليل المكتبات (Modules)", ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True), height=lv_height(0.72))
 
     def show_explain(e=None):
         code = W["editor"].value or ""
         res = core.explain_code(code)
+        rows = core.explain_lines(code)
         ctrls = [ft.Text(f"عدد الاسطر: {res['lines']}", size=12, color=C["gutter"])]
         if res["error"] is not None:
             info = core.explain_error(res["error"], code)
             ctrls.append(ft.Text(
                 f"تنبيه: في الكود خطأ كتابة (السطر {info['line']}): {info['reason']} {info['hint']}",
                 color=C["err"], size=13))
-        if not res["items"]:
+        if not rows:
             ctrls.append(ft.Text("لا يوجد كود لشرحه. اكتب كودا وجرّب مرة اخرى."))
-        for label, text, lines in res["items"]:
-            sub = text
-            if lines:
-                sub += "\nالسطر: " + "، ".join(str(x) for x in lines)
-            ctrls.append(ft.ListTile(title=ft.Text(label, font_family=MONO, size=14),
-                                     subtitle=ft.Text(sub, size=12), dense=True))
-        dialog("شرح الكود", ft.ListView(ctrls, spacing=0), height=lv_height(0.72))
+        for no, src, text in rows:
+            ctrls.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([ft.Container(content=ft.Text(str(no), size=12, color=C["fg"]),
+                                         bgcolor=C["sym"], padding=ft.Padding.symmetric(
+                                             vertical=2, horizontal=7),
+                                         border_radius=ft.BorderRadius.all(4)),
+                            ft.Text(src, size=13, font_family=MONO, color=C["ok"], expand=True,
+                                    selectable=True)], spacing=8),
+                    ft.Text(text, size=13, color=C["fg"])], spacing=3),
+                padding=ft.Padding.symmetric(vertical=7, horizontal=2),
+                border=ft.Border(bottom=ft.BorderSide(1, C["line"]))))
+        dialog("شرح الكود سطرا بسطر",
+               ft.Column(ctrls, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
+               height=lv_height(0.78))
 
     def show_files(e=None):
         d = files_dir()
-        lv = ft.ListView(spacing=0, expand=True)
+        lv = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
         def refresh():
             names = sorted(n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
@@ -804,7 +858,13 @@ async def main(page: ft.Page):
             page.update()
 
         refresh()
-        dialog("ملفاتي", lv, height=lv_height(0.5))
+        def pick_device(ev):
+            page.pop_dialog()
+            page.run_task(open_picker)
+
+        dialog("ملفاتي", ft.Column([
+            ft.Button(content="فتح ملف من الجهاز", icon=ic("FOLDER_OPEN"), on_click=pick_device),
+            lv], expand=True, spacing=6), height=lv_height(0.6))
 
     def show_libs(e=None):
         import importlib
@@ -901,10 +961,8 @@ async def main(page: ft.Page):
 
         items = [
             item("NOTE_ADD", "ملف جديد", lambda: new_tab()),
-            item("FOLDER_OPEN", "فتح ملف", open_picker),
-            item("FOLDER", "ملفاتي", show_files),
+            item("FOLDER", "ملفاتي (فتح)", show_files),
             item("SAVE", "حفظ", save_current),
-            item("SAVE_AS", "حفظ باسم", save_as),
             item("LIGHTBULB", "امثلة وادوات جاهزة", show_examples),
             item("KEY", "دليل بايثون (كلمات ودوال)", show_keywords),
             item("MENU_BOOK", "دليل المكتبات", show_modules),

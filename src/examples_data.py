@@ -2,9 +2,10 @@
 from ex_basics import ITEMS as _B
 from ex_tools import ITEMS as _T
 from ex_games import ITEMS as _G
+from ex_more import ITEMS as _M
 
 # كل عنصر: (التصنيف, العنوان, الكود, مدخلات_اختبار)
-ALL = list(_B) + list(_T) + list(_G)
+ALL = list(_B) + list(_T) + list(_G) + list(_M)
 
 ORDER = ["أساسيات", "أدوات", "ألعاب", "خوارزميات"]
 
