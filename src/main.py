@@ -173,8 +173,26 @@ async def main(page: ft.Page):
             pass
 
     # --------------------------------------------------------- المحرر
-    def GB():
-        return {}
+    def gutter_width():
+        digits = max(2, len(str(max(1, (cur()["code"] or "").count("\n") + 1))))
+        return float(14 + digits * (max(10.0, S["fs"] - 3) * 0.62 + 2))
+
+    def base_words():
+        import keyword
+        return list(keyword.kwlist) + list(core.BUILTIN_EXPLAIN.keys())
+
+    def words_now():
+        try:
+            mine = core.defined_names(W["editor"].value or "")
+        except Exception:
+            mine = []
+        return sorted(set(base_words()) | set(mine))
+
+    def gutter():
+        return fce.GutterStyle(
+            text_style=ft.TextStyle(font_family=MONO, size=max(10.0, S["fs"] - 3),
+                                    color=C["gutter"]),
+            show_line_numbers=True, show_folding_handles=False, width=gutter_width())
 
     def make_editor():
         kw = dict(
@@ -185,19 +203,24 @@ async def main(page: ft.Page):
             text_style=ft.TextStyle(font_family=MONO, size=S["fs"]),
             on_change=on_change,
             on_selection_change=on_sel,
+            autocomplete=True,
+            autocomplete_words=sorted(set(base_words()) | set(core.defined_names(cur()["code"]))),
+            wrap=True,
         )
         try:
-            kw["gutter_style"] = fce.GutterStyle(
-                text_style=ft.TextStyle(font_family=MONO, size=max(10.0, S["fs"] - 3),
-                                        color=C["gutter"]),
-                show_line_numbers=True, show_folding_handles=False, width=46, **GB())
+            kw["gutter_style"] = gutter()
         except Exception:
             pass
-        try:
-            return fce.CodeEditor(**kw)
-        except TypeError:
-            kw.pop("gutter_style", None)
-            return fce.CodeEditor(**kw)
+        import re as _re
+        for _ in range(len(kw) + 1):
+            try:
+                return fce.CodeEditor(**kw)
+            except TypeError as ex:
+                m = _re.search(r"argument '(\w+)'", str(ex))
+                if m and m.group(1) in kw and m.group(1) not in ("language", "value"):
+                    kw.pop(m.group(1))
+                    continue
+                raise
 
     def set_caret(pos):
         S["sel"] = (pos, pos)
@@ -232,6 +255,22 @@ async def main(page: ft.Page):
         t["code"] = new
         render_tabs()
         schedule_save(now=(new.count("\n") != old.count("\n")))
+        S["wv"] = S.get("wv", 0) + 1
+        wv = S["wv"]
+
+        async def refresh_words():
+            await asyncio.sleep(1.2)
+            if wv != S["wv"]:
+                return
+            try:
+                ed = W["editor"]
+                ed.autocomplete_words = words_now()
+                ed.gutter_style = gutter()
+                page.update()
+            except Exception:
+                pass
+
+        page.run_task(refresh_words)
 
     def on_sel(e):
         try:
@@ -490,35 +529,34 @@ async def main(page: ft.Page):
     writer = Out()
 
     def show_input_row(prompt, ev):
-        box = W.get("input_box")
-        if box is None:
+        out = W.get("out")
+        if out is None:
             ev.set()
             return
-        rtl = bool(AR.search(prompt))
         field = ft.TextField(
-            value="", autofocus=True, dense=True, text_size=S["fs"],
-            border_color=ft.Colors.TRANSPARENT, color=C["fg"],
+            value="", autofocus=True, expand=True, dense=True, text_size=S["fs"],
+            border_color=ft.Colors.TRANSPARENT, color=C["ok"],
             text_style=ft.TextStyle(font_family=MONO, size=S["fs"]),
-            content_padding=ft.Padding.symmetric(vertical=4, horizontal=0),
-            text_align=ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT)
-        label = ft.Text(prompt or "ادخل قيمة:", color=C["hint"], size=S["fs"], font_family=MONO,
-                        text_align=ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT)
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=4))
+        label = ft.Text(prompt, color=C["fg"], size=S["fs"], font_family=MONO)
+        marker = ft.Text("\u203a", color=C["hint"], size=S["fs"] + 4, font_family=MONO)
+        row = ft.Row([marker, label, field], spacing=4,
+                     vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         def submit(e):
             S["answer"] = field.value or ""
-            box.visible = False
+            try:
+                out.controls.remove(row)
+            except ValueError:
+                pass
             shown = prompt + S["answer"]
             S["out"].append((shown, "out"))
-            W["out"].controls.append(out_row(shown, "out"))
+            out.controls.append(out_row(shown, "out"))
             page.update()
             ev.set()
 
         field.on_submit = submit
-        send = ft.IconButton(icon=ic("SEND"), icon_color=C["ok"], on_click=submit)
-        box.content = ft.Column([
-            ft.Row([label], alignment=ft.MainAxisAlignment.END if rtl else ft.MainAxisAlignment.START),
-            ft.Row([send, field] if rtl else [field, send], spacing=0)], spacing=0, tight=True)
-        box.visible = True
+        out.controls.append(row)
         page.update()
         try:
             page.run_task(field.focus)
@@ -600,6 +638,12 @@ async def main(page: ft.Page):
         S["stopped"] = False
         S["out"].clear()
         W["out"].controls.clear()
+        try:
+            for ln, kind, reason, hint in core.diagnose(code):
+                if kind == "warn":
+                    post_line(f"تنبيه (السطر {ln}): {reason} {hint}", "hint")
+        except Exception:
+            pass
 
         def target():
             S["tid"] = threading.get_ident()
@@ -642,6 +686,27 @@ async def main(page: ft.Page):
                 return
             start_thread(compiled, code)
 
+    def restart(e=None):
+        async def go():
+            if S["thread"] and S["thread"].is_alive():
+                stop()
+                for _ in range(40):
+                    if not S["thread"].is_alive():
+                        break
+                    await asyncio.sleep(0.1)
+            cur_code = cur()["code"]
+            W["out"].controls.clear()
+            S["out"].clear()
+            try:
+                compiled = compile(cur_code, "main.py", "exec")
+            except SyntaxError as ex:
+                show_error(ex, cur_code)
+                flush_ui()
+                return
+            start_thread(compiled, cur_code)
+
+        page.run_task(go)
+
     def back_to_editor(e=None):
         th = S["thread"]
         if th and th.is_alive():
@@ -659,13 +724,12 @@ async def main(page: ft.Page):
                 ft.IconButton(icon=ic("ARROW_BACK"), icon_color=C["fg"], on_click=back_to_editor,
                               tooltip="رجوع للمحرر"),
                 ft.Text("النتيجة", size=18, weight=ft.FontWeight.BOLD, color=C["fg"], expand=True),
+                ft.IconButton(icon=ic("REPLAY"), icon_color=C["fg"], on_click=restart,
+                              tooltip="اعادة التشغيل من جديد"),
                 W["run_btn"],
             ], spacing=0),
             bgcolor=C["bar"], padding=ft.Padding.symmetric(vertical=2, horizontal=6))
-        box = ft.Container(visible=False, bgcolor=C["bar"],
-                           padding=ft.Padding.symmetric(vertical=4, horizontal=12))
-        W["input_box"] = box
-        body = ft.Column([header, ft.Container(content=out, expand=True, bgcolor=C["panel"]), box],
+        body = ft.Column([header, ft.Container(content=out, expand=True, bgcolor=C["panel"])],
                          spacing=0, expand=True)
         show_screen(body)
 
@@ -689,10 +753,7 @@ async def main(page: ft.Page):
             ed = W["editor"]
             ed.text_style = ft.TextStyle(font_family=MONO, size=S["fs"])
             try:
-                ed.gutter_style = fce.GutterStyle(
-                    text_style=ft.TextStyle(font_family=MONO, size=max(10.0, S["fs"] - 3),
-                                            color=C["gutter"]),
-                    show_line_numbers=True, show_folding_handles=False, width=46)
+                ed.gutter_style = gutter()
             except Exception:
                 pass
 
@@ -806,11 +867,19 @@ async def main(page: ft.Page):
         res = core.explain_code(code)
         rows = core.explain_lines(code)
         ctrls = [ft.Text(f"عدد الاسطر: {res['lines']}", size=12, color=C["gutter"])]
-        if res["error"] is not None:
-            info = core.explain_error(res["error"], code)
-            ctrls.append(ft.Text(
-                f"تنبيه: في الكود خطأ كتابة (السطر {info['line']}): {info['reason']} {info['hint']}",
-                color=C["err"], size=13))
+        diags = core.diagnose(code)
+        ctrls.append(ft.Text("فحص الكود", weight=ft.FontWeight.BOLD, color=C["ok"]))
+        if not diags:
+            ctrls.append(ft.Text("لم أجد اخطاء كتابة او اسماء غير معرّفة.", size=13,
+                                 color=C["ok"]))
+        for ln, kind, reason, hint in diags:
+            ctrls.append(ft.Container(
+                content=ft.Column([
+                    ft.Text(f"السطر {ln}: {reason}", size=13,
+                            color=C["err"] if kind == "error" else C["hint"]),
+                    ft.Text("الحل: " + hint, size=12, color=C["fg"])], spacing=2),
+                padding=ft.Padding.symmetric(vertical=5, horizontal=2)))
+        ctrls.append(ft.Text("الشرح", weight=ft.FontWeight.BOLD, color=C["ok"]))
         if not rows:
             ctrls.append(ft.Text("لا يوجد كود لشرحه. اكتب كودا وجرّب مرة اخرى."))
         for no, src, text in rows:

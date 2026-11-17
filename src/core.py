@@ -876,3 +876,78 @@ def auto_newline(old, new):
         return text, k + 1 + len(indent) + 4
     text = old[:k] + "\n" + indent + old[k:]
     return text, k + 1 + len(indent)
+
+
+# ------------------------------------------------------------------ فحص الكود
+def _bound_names(tree):
+    import ast
+    names = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(n.name)
+            if not isinstance(n, ast.ClassDef):
+                a = n.args
+                for x in a.args + a.kwonlyargs + getattr(a, "posonlyargs", []):
+                    names.add(x.arg)
+                if a.vararg:
+                    names.add(a.vararg.arg)
+                if a.kwarg:
+                    names.add(a.kwarg.arg)
+        elif isinstance(n, ast.Lambda):
+            a = n.args
+            for x in a.args + a.kwonlyargs + getattr(a, "posonlyargs", []):
+                names.add(x.arg)
+            if a.vararg:
+                names.add(a.vararg.arg)
+            if a.kwarg:
+                names.add(a.kwarg.arg)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            names.add(n.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for al in n.names:
+                names.add((al.asname or al.name).split(".")[0])
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            names.add(n.name)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            names.update(n.names)
+    return names
+
+
+def defined_names(code):
+    """الاسماء التي عرّفها المستخدم في الكود (للإكمال التلقائي). لا تفشل مع الكود الناقص."""
+    import ast
+    try:
+        return sorted(_bound_names(ast.parse(code)))
+    except SyntaxError:
+        return sorted(set(re.findall(r"^\s*(?:def|class)\s+([^\W\d]\w*)", code, re.M)) |
+                      set(re.findall(r"^\s*([^\W\d]\w*)\s*=(?!=)", code, re.M)))
+
+
+def diagnose(code):
+    """يفحص الكود قبل التشغيل. يعيد قائمة (السطر, النوع 'error'|'warn', السبب, الحل)."""
+    import ast
+    import difflib
+    out = []
+    try:
+        tree = ast.parse(code, "main.py")
+    except SyntaxError as ex:
+        info = explain_error(ex, code)
+        out.append((info["line"] or 1, "error", info["reason"], info["hint"]))
+        return out
+    if re.search(r"^\s*from\s+\S+\s+import\s+\*", code, re.M):
+        return out
+    known = _bound_names(tree) | _BUILTINS | _KW | {
+        "__name__", "__file__", "__doc__", "self", "cls", "__class__"}
+    seen = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in known:
+            key = (n.lineno, n.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            close = difflib.get_close_matches(n.id, sorted(known), n=2, cutoff=0.7)
+            hint = ("هل تقصد: " + " او ".join(close) + " ؟") if close else \
+                "عرّف المتغير قبل استخدامه، او تأكد من كتابة اسمه بنفس الحروف."
+            out.append((n.lineno, "warn", f"الاسم «{n.id}» غير معرّف في الكود.", hint))
+    out.sort(key=lambda r: r[0])
+    return out
