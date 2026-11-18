@@ -951,3 +951,73 @@ def diagnose(code):
             out.append((n.lineno, "warn", f"الاسم «{n.id}» غير معرّف في الكود.", hint))
     out.sort(key=lambda r: r[0])
     return out
+
+
+# ------------------------------------------------------- كل كلمات بايثون للاقتراحات
+_WORDS_CACHE = None
+
+
+def all_words():
+    """قائمة (كلمة, وسم) بكل ما يهم في بايثون: كلمات محجوزة، دوال مدمجة، أخطاء،
+    دوال النصوص والقوائم والقواميس والمجموعات..، وأسماء دوال المكتبات الشائعة."""
+    global _WORDS_CACHE
+    if _WORDS_CACHE is not None:
+        return _WORDS_CACHE
+    import builtins
+    import importlib
+    import keyword
+    import sys
+    seen = {}
+
+    def add(w, tag):
+        if w and not w.startswith("_") and w not in seen:
+            seen[w] = tag
+
+    for w in keyword.kwlist:
+        add(w, "كلمة محجوزة")
+    for w in dir(builtins):
+        obj = getattr(builtins, w, None)
+        if isinstance(obj, type) and issubclass(obj, BaseException):
+            add(w, "خطأ")
+        else:
+            add(w, "مدمجة")
+    for tp, label in ((str, "نص"), (list, "قائمة"), (dict, "قاموس"), (set, "مجموعة"),
+                      (tuple, "tuple"), (int, "رقم"), (float, "عشري"), (bytes, "bytes"),
+                      (frozenset, "frozenset")):
+        for w in dir(tp):
+            add(w, label)
+    for m in ("math", "random", "os", "sys", "time", "datetime", "json", "re", "string",
+              "itertools", "collections", "statistics", "functools", "pathlib",
+              "urllib.request", "csv", "textwrap", "heapq", "bisect", "copy", "decimal"):
+        try:
+            mod = importlib.import_module(m)
+        except Exception:
+            continue
+        for w in dir(mod):
+            add(w, m)
+    for w in getattr(sys, "stdlib_module_names", ()):
+        add(w, "مكتبة")
+    for w in ("self", "__init__", "__name__", "__main__", "__file__"):
+        seen.setdefault(w, "خاص")
+    _WORDS_CACHE = sorted(seen.items(), key=lambda kv: (len(kv[0]), kv[0].lower()))
+    return _WORDS_CACHE
+
+
+def suggest(prefix, user_names=(), limit=14):
+    """اقتراحات تبدأ بـ prefix. تعيد قائمة (كلمة, وسم). اسماء المستخدم اولا."""
+    p = prefix.lower()
+    if not p:
+        return []
+    out, seen = [], set()
+    for w in user_names:
+        if w.lower().startswith(p) and w not in seen:
+            seen.add(w)
+            out.append((w, "من كودك"))
+    for w, tag in all_words():
+        if w.lower().startswith(p) and w not in seen:
+            seen.add(w)
+            out.append((w, tag))
+    # ترتيب: اسماء المستخدم، ثم كلمات بايثون الاساسية، ثم الباقي
+    pri = {"من كودك": 0, "كلمة محجوزة": 1, "مدمجة": 1, "خطأ": 2}
+    out.sort(key=lambda x: (x[0] != prefix, pri.get(x[1], 3), x[0].isupper(), len(x[0]), x[0].lower()))
+    return out[:limit]

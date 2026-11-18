@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 import flet as ft
 import flet_code_editor as fce
@@ -16,6 +17,8 @@ import core
 
 AR = core.AR
 MONO = "monospace"
+BIG_CHARS = 60000      # فوق هذا الحجم نوقف المعالجة الذكية
+HUGE_CHARS = 100000    # فوق هذا الحجم نحفظ النص في ملف منفصل بدل التخزين الداخلي
 
 BASE = (os.environ.get("FLET_APP_STORAGE_DATA") or os.environ.get("FLET_APP_STORAGE_TEMP")
         or os.path.join(os.path.expanduser("~"), ".pyeditor"))
@@ -119,6 +122,14 @@ async def main(page: ft.Page):
     S["fs"] = float(S["fs"])
     if data.get("tabs"):
         S["tabs"] = data["tabs"]
+        for tb in S["tabs"]:
+            bp = tb.pop("bigpath", "")
+            if bp and os.path.isfile(bp):
+                try:
+                    with open(bp, encoding="utf-8") as f:
+                        tb["code"] = f.read()
+                except Exception:
+                    pass
         S["active"] = clamp(int(data.get("active", 0)), 0, len(S["tabs"]) - 1)
     else:
         S["tabs"] = [{"name": "new", "path": "", "code": DEFAULT_CODE, "saved": ""}]
@@ -146,9 +157,21 @@ async def main(page: ft.Page):
             except Exception:
                 pass
         try:
+            tabs_out = []
+            for i, tb in enumerate(S["tabs"]):
+                if len(tb.get("code", "")) > HUGE_CHARS:
+                    os.makedirs(BASE, exist_ok=True)
+                    bp = os.path.join(BASE, f"big_{i}.txt")
+                    with open(bp, "w", encoding="utf-8") as f:
+                        f.write(tb["code"])
+                    tb2 = dict(tb)
+                    tb2["code"], tb2["saved"], tb2["bigpath"] = "", "", bp
+                    tabs_out.append(tb2)
+                else:
+                    tabs_out.append(tb)
             await prefs.set("state", json.dumps({
                 "dark": S["dark"], "fs": S["fs"], "ac": S["ac"], "autofile": S["autofile"],
-                "tabs": S["tabs"], "active": S["active"]}, ensure_ascii=False))
+                "tabs": tabs_out, "active": S["active"]}, ensure_ascii=False))
         except Exception:
             pass
 
@@ -209,8 +232,6 @@ async def main(page: ft.Page):
             text_style=ft.TextStyle(font_family=MONO, size=S["fs"]),
             on_change=on_change,
             on_selection_change=on_sel,
-            autocomplete=True,
-            autocomplete_words=sorted(set(base_words()) | set(core.defined_names(cur()["code"]))),
             wrap=True,
         )
         try:
@@ -248,6 +269,13 @@ async def main(page: ft.Page):
         old = S["last"]
         if new == old:
             return
+        if len(new) > BIG_CHARS or abs(len(new) - len(old)) > 3000:
+            # لصق او ملف كبير: لا معالجة ثقيلة (تنسيق/اكمال/فحص) لتجنب التجمد
+            S["last"] = new
+            cur()["code"] = new
+            render_tabs()
+            schedule_save()
+            return
         res = core.auto_newline(old, new)
         if res is None and S["ac"]:
             res = core.auto_edit(old, new, S["cursor"])
@@ -261,6 +289,9 @@ async def main(page: ft.Page):
         t["code"] = new
         render_tabs()
         schedule_save(now=(new.count("\n") != old.count("\n")))
+        request_sugg()
+        if len(new) > 30000:
+            return
         S["wv"] = S.get("wv", 0) + 1
         wv = S["wv"]
 
@@ -270,13 +301,76 @@ async def main(page: ft.Page):
                 return
             try:
                 ed = W["editor"]
-                ed.autocomplete_words = words_now()
                 ed.gutter_style = gutter()
                 page.update()
             except Exception:
                 pass
 
         page.run_task(refresh_words)
+
+    # ------------------------------------------------ شريط الاقتراحات (ضغطة واحدة)
+    def hide_sugg():
+        box = W.get("sugg_box")
+        if box is not None and box.visible:
+            box.visible = False
+            page.update()
+
+    def apply_sugg(word):
+        import re as _re
+        text = W["editor"].value or ""
+        pos = clamp(S["cursor"], 0, len(text))
+        m = _re.search(r"[A-Za-z_][A-Za-z_0-9]*$", text[:pos])
+        n = len(m.group()) if m else 0
+        new = text[:pos - n] + word + text[pos:]
+        S["sugg_block"] = time.monotonic() + 0.8
+        set_text(new, pos - n + len(word))
+        hide_sugg()
+        schedule_save()
+        page.update()
+
+    def update_sugg():
+        import re as _re
+        box, row = W.get("sugg_box"), W.get("sugg_row")
+        if box is None or S["screen"] != "editor":
+            return
+        text = W["editor"].value or ""
+        if time.monotonic() < S.get("sugg_block", 0) or len(text) > BIG_CHARS:
+            hide_sugg()
+            return
+        pos = clamp(S["cursor"], 0, len(text))
+        m = _re.search(r"[A-Za-z_][A-Za-z_0-9]*$", text[:pos])
+        if not m:
+            hide_sugg()
+            return
+        mine = core.defined_names(text) if len(text) < 30000 else []
+        items = core.suggest(m.group(), mine, limit=16)
+        if not items:
+            hide_sugg()
+            return
+        row.controls = [ft.Container(
+            content=ft.Row([ft.Text(w, size=15, font_family=MONO, color=C["fg"]),
+                            ft.Text(tag, size=10, color=C["gutter"])],
+                           spacing=5, tight=True),
+            padding=ft.Padding.symmetric(vertical=7, horizontal=11),
+            margin=ft.Margin.symmetric(horizontal=2),
+            bgcolor=C["sym"], border_radius=ft.BorderRadius.all(7),
+            on_click=lambda e, w=w: apply_sugg(w)) for w, tag in items]
+        box.visible = True
+        page.update()
+
+    def request_sugg():
+        S["sv"] = S.get("sv", 0) + 1
+        v = S["sv"]
+
+        async def later():
+            await asyncio.sleep(0.15)
+            if v == S["sv"]:
+                try:
+                    update_sugg()
+                except Exception:
+                    pass
+
+        page.run_task(later)
 
     def on_sel(e):
         try:
@@ -291,6 +385,7 @@ async def main(page: ft.Page):
                 S["cursor"] = int(b)
         except Exception:
             pass
+        request_sugg()
 
     def on_sym(sym):
         text = W["editor"].value or ""
@@ -1093,9 +1188,12 @@ async def main(page: ft.Page):
             content=ft.Row([sym_button(s) for s in SYMBOLS], scroll=ft.ScrollMode.AUTO, spacing=0),
             bgcolor=C["bar"], padding=ft.Padding.symmetric(vertical=2, horizontal=0))
 
+        W["sugg_row"] = ft.Row(scroll=ft.ScrollMode.AUTO, spacing=0)
+        W["sugg_box"] = ft.Container(content=W["sugg_row"], visible=False, bgcolor=C["bar"],
+                                     padding=ft.Padding.symmetric(vertical=3, horizontal=4))
         body = ft.Column([appbar, tabs_box,
                           ft.Container(content=W["editor"], expand=True, bgcolor=C["bg"]),
-                          sym_bar], spacing=0, expand=True)
+                          W["sugg_box"], sym_bar], spacing=0, expand=True)
         show_screen(body)
 
     build_editor_screen()
