@@ -198,8 +198,22 @@ async def main(page: ft.Page):
     # --------------------------------------------------------- المحرر
     def gutter_width():
         # عرض سخي: 3 ارقام على الاقل، وكل رقم بعرض الخط الاساسي (وليس الاصغر)
-        digits = max(3, len(str(max(1, (cur()["code"] or "").count("\n") + 1))))
-        return float(28 + digits * S["fs"] * 0.8)
+        digits = max(3, int(S.get("gdig", 3)))
+        return float(30 + digits * S["fs"] * 0.9)
+
+    def sync_gutter(text):
+        """يضبط عرض عمود الارقام حسب عدد اسطر الكود (حتى لو 100000 سطر)."""
+        d = max(3, len(str(text.count("\n") + 1)))
+        if d == S.get("gdig"):
+            return
+        S["gdig"] = d
+        ed = W.get("editor")
+        if ed is not None:
+            try:
+                ed.gutter_style = gutter()
+                page.update()
+            except Exception:
+                pass
 
     def base_words():
         import keyword
@@ -224,6 +238,7 @@ async def main(page: ft.Page):
                                    show_folding_handles=False, width=gutter_width())
 
     def make_editor():
+        S["gdig"] = max(3, len(str((cur()["code"] or "").count("\n") + 1)))
         kw = dict(
             language=fce.CodeLanguage.PYTHON,
             code_theme=pick_theme(S["dark"]),
@@ -261,6 +276,7 @@ async def main(page: ft.Page):
         W["editor"].value = text
         S["last"] = text
         cur()["code"] = text
+        sync_gutter(text)
         if pos is not None:
             set_caret(pos)
 
@@ -273,6 +289,7 @@ async def main(page: ft.Page):
             # لصق او ملف كبير: لا معالجة ثقيلة (تنسيق/اكمال/فحص) لتجنب التجمد
             S["last"] = new
             cur()["code"] = new
+            sync_gutter(new)
             render_tabs()
             schedule_save()
             return
@@ -287,6 +304,7 @@ async def main(page: ft.Page):
         S["last"] = new
         t = cur()
         t["code"] = new
+        sync_gutter(new)
         render_tabs()
         schedule_save(now=(new.count("\n") != old.count("\n")))
         request_sugg()
@@ -343,7 +361,7 @@ async def main(page: ft.Page):
             hide_sugg()
             return
         mine = core.defined_names(text) if len(text) < 30000 else []
-        items = core.suggest(m.group(), mine, limit=16)
+        items = core.suggest(m.group(), mine, limit=60)
         if not items:
             hide_sugg()
             return
@@ -1188,9 +1206,12 @@ async def main(page: ft.Page):
             content=ft.Row([sym_button(s) for s in SYMBOLS], scroll=ft.ScrollMode.AUTO, spacing=0),
             bgcolor=C["bar"], padding=ft.Padding.symmetric(vertical=2, horizontal=0))
 
-        W["sugg_row"] = ft.Row(scroll=ft.ScrollMode.AUTO, spacing=0)
-        W["sugg_box"] = ft.Container(content=W["sugg_row"], visible=False, bgcolor=C["bar"],
-                                     padding=ft.Padding.symmetric(vertical=3, horizontal=4))
+        W["sugg_row"] = ft.Row(wrap=True, spacing=4, run_spacing=4)
+        W["sugg_box"] = ft.Container(
+            content=ft.Column([W["sugg_row"]], scroll=ft.ScrollMode.AUTO, spacing=0),
+            visible=False, height=120, bgcolor=C["bar"],
+            border=ft.Border.all(1, C["line"]),
+            padding=ft.Padding.symmetric(vertical=4, horizontal=4))
         body = ft.Column([appbar, tabs_box,
                           ft.Container(content=W["editor"], expand=True, bgcolor=C["bg"]),
                           W["sugg_box"], sym_bar], spacing=0, expand=True)
